@@ -1,0 +1,10 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"command": "python connection_monitor.py",
+			"label": "Run Connection Monitor",
+			"type": "shell"
+		}
+	]
+}
