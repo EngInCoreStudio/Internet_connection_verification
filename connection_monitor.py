@@ -151,6 +151,10 @@ class ConnectionMonitorApp:
         self.stop_btn.grid(row=12, column=1, pady=10)
         self.history_btn = ttk.Button(frm, text='Show History', command=self._show_history_window)
         self.history_btn.grid(row=12, column=2, pady=10)
+        self.live_btn = ttk.Button(frm, text='Live Monitor', command=self._start_live_plot)
+        self.live_btn.grid(row=13, column=0, columnspan=3, pady=10)
+        self.speedtest_history_btn = ttk.Button(frm, text='Show Speedtest History', command=self._show_speedtest_history)
+        self.speedtest_history_btn.grid(row=14, column=0, columnspan=3, pady=10)
 
     def _browse_log_dir(self):
         d = filedialog.askdirectory()
@@ -210,8 +214,8 @@ class ConnectionMonitorApp:
         result = run_speedtest(server_id)
         log_speedtest(self.log_dir.get(), result)
         if 'download' in result and 'upload' in result:
-            download = result['download'] / 1e6
-            upload = result['upload'] / 1e6
+            download = float(result['download']) / 1e6
+            upload = float(result['upload']) / 1e6
             self.root.after(0, lambda d=download, u=upload: self._update_speedtest_display(d, u))
         else:
             self.root.after(0, lambda: self._update_speedtest_display('-', '-'))
@@ -257,7 +261,100 @@ class ConnectionMonitorApp:
         lines1, labels1 = ax1.get_legend_handles_labels()
         lines2, labels2 = ax2.get_legend_handles_labels()
         fig.legend(lines1 + lines2, labels1 + labels2, loc='upper center', ncol=3, frameon=True, fontsize=11, bbox_to_anchor=(0.5, 1.04))
-        plt.tight_layout(rect=[0, 0, 1, 0.97])
+        plt.tight_layout(rect=(0, 0, 1, 0.97))
+        plt.show()
+
+    def _start_live_plot(self):
+        import matplotlib.pyplot as plt
+        import matplotlib.animation as animation
+        import matplotlib.dates as mdates
+        import pandas as pd
+        import os
+        from matplotlib import style
+        style.use('seaborn-v0_8-darkgrid')
+        ping_path = os.path.join(self.log_dir.get(), 'ping_results.csv')
+        fig, ax1 = plt.subplots(figsize=(12, 6))
+        ax2 = ax1.twinx()
+        def animate(i):
+            if not os.path.exists(ping_path):
+                return []
+            df = pd.read_csv(ping_path)
+            if df.empty or df['Latency (ms)'].isnull().all():
+                return []
+            df['Timestamp'] = pd.to_datetime(df['Timestamp'])
+            ax1.clear()
+            ax2.clear()
+            valid = df['Latency (ms)'] != -1
+            ax1.plot(df['Timestamp'][valid], df['Latency (ms)'][valid], label='Latency (ms)', color='tab:blue', marker='o', markersize=3)
+            ax1.set_ylabel('Latency (ms)', color='tab:blue')
+            ax1.tick_params(axis='y', labelcolor='tab:blue')
+            lost = df['Latency (ms)'] == -1
+            if lost.any():
+                ax1.scatter(df['Timestamp'][lost], [0]*lost.sum(), color='red', label='Packet Lost', marker='x', s=40)
+            # Plot Packet Loss on secondary (right) axis only
+            ax2.plot(df['Timestamp'], df['Packet Loss (%)'], label='Packet Loss (%)', color='tab:orange', alpha=0.5, linestyle='--')
+            ax2.set_ylabel('Packet Loss (%)', color='tab:orange')
+            ax2.tick_params(axis='y', labelcolor='tab:orange')
+            ax2.yaxis.set_label_position('right')
+            ax2.yaxis.set_ticks_position('right')
+            ax1.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+            fig.autofmt_xdate()
+            ax1.set_title('Live Internet Connection Monitoring')
+            lines1, labels1 = ax1.get_legend_handles_labels()
+            lines2, labels2 = ax2.get_legend_handles_labels()
+            fig.legend(lines1 + lines2, labels1 + labels2, loc='upper center', ncol=3, frameon=True, fontsize=11, bbox_to_anchor=(0.5, 1.04))
+            fig.tight_layout(rect=(0, 0, 1, 0.97))
+            artists = []
+            artists.extend(ax1.get_lines())
+            artists.extend(ax1.collections)
+            artists.extend(ax2.get_lines())
+            return artists
+        ani = animation.FuncAnimation(fig, animate, interval=2000)
+        plt.show()
+
+    def _show_speedtest_history(self):
+        import matplotlib.pyplot as plt
+        import pandas as pd
+        import json
+        import os
+        from datetime import datetime
+        speedtest_path = os.path.join(self.log_dir.get(), 'speedtest_results.json')
+        if not os.path.exists(speedtest_path):
+            messagebox.showerror('Error', 'No speedtest_results.json found!')
+            return
+        # Read all lines and parse JSON
+        records = []
+        with open(speedtest_path, 'r') as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                    if 'timestamp' in rec:
+                        ts = pd.to_datetime(rec['timestamp'])
+                    else:
+                        ts = None
+                    download = float(rec['download']) / 1e6 if 'download' in rec else None
+                    upload = float(rec['upload']) / 1e6 if 'upload' in rec else None
+                    records.append({'Timestamp': ts, 'Download (Mbit/s)': download, 'Upload (Mbit/s)': upload})
+                except Exception:
+                    continue
+        df = pd.DataFrame(records)
+        plt.style.use('seaborn-v0_8-darkgrid')
+        fig, ax = plt.subplots(figsize=(12, 6))
+        # Remove rows with NaT timestamps for plotting by time
+        df_valid_time = df.dropna(subset=['Timestamp'])
+        if not df_valid_time.empty:
+            ax.plot(df_valid_time['Timestamp'], df_valid_time['Download (Mbit/s)'], label='Download (Mbit/s)', color='tab:green', marker='o', markersize=4)
+            ax.plot(df_valid_time['Timestamp'], df_valid_time['Upload (Mbit/s)'], label='Upload (Mbit/s)', color='tab:purple', marker='o', markersize=4)
+            ax.set_xlabel('Timestamp')
+            fig.autofmt_xdate()
+        else:
+            ax.plot(df.index, df['Download (Mbit/s)'], label='Download (Mbit/s)', color='tab:green', marker='o', markersize=4)
+            ax.plot(df.index, df['Upload (Mbit/s)'], label='Upload (Mbit/s)', color='tab:purple', marker='o', markersize=4)
+            ax.set_xlabel('Test #')
+        ax.set_ylabel('Speed (Mbit/s)')
+        ax.set_title('Speedtest Results Over Time')
+        ax.legend(loc='upper left')
+        plt.tight_layout()
         plt.show()
 
 if __name__ == '__main__':
